@@ -1,53 +1,80 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Keyboard and mouse, read as state plus one-frame action edges. The loop asks for
+// the movement axes every step and consumes actions (confirm, pause, interact,
+// mute) exactly once each, so a held key never retriggers a menu or a car door.
 
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
+export const ACTION_INTERACT = 4;
+export const ACTION_MUTE = 8;
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+const KEYMAP = {
+  KeyW: 'up', ArrowUp: 'up',
+  KeyS: 'down', ArrowDown: 'down',
+  KeyA: 'left', ArrowLeft: 'left',
+  KeyD: 'right', ArrowRight: 'right',
+};
 
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+export function createInput(canvas) {
+  const held = new Set();
+  let pending = 0;
+  const mouse = { x: 0, y: 0, down: false };
+
+  function press(code) {
+    if (code === 'Enter' || code === 'Space') pending |= ACTION_CONFIRM;
+    if (code === 'KeyP' || code === 'Escape') pending |= ACTION_PAUSE;
+    if (code === 'KeyE') pending |= ACTION_INTERACT;
+    if (code === 'KeyM') pending |= ACTION_MUTE;
+  }
 
   window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
+    if (KEYMAP[event.code] || event.code === 'Space') event.preventDefault();
+    if (!event.repeat) press(event.code);
+    held.add(event.code);
   });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
+  window.addEventListener('keyup', (event) => held.delete(event.code));
+  window.addEventListener('blur', () => held.clear());
+
+  function toLocal(event) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    mouse.y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+  }
+  canvas.addEventListener('mousemove', toLocal);
+  canvas.addEventListener('mousedown', (event) => {
+    toLocal(event);
+    mouse.down = true;
+    pending |= ACTION_CONFIRM;
   });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+  window.addEventListener('mouseup', () => { mouse.down = false; });
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    mouse,
+    /** -1..1 movement axes from the held keys. */
+    axisX() {
+      let v = 0;
+      for (const code of held) {
+        if (KEYMAP[code] === 'left') v -= 1;
+        if (KEYMAP[code] === 'right') v += 1;
+      }
+      return v;
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
+    axisY() {
+      let v = 0;
+      for (const code of held) {
+        if (KEYMAP[code] === 'up') v -= 1;
+        if (KEYMAP[code] === 'down') v += 1;
+      }
+      return v;
+    },
+    sprint() { return held.has('ShiftLeft') || held.has('ShiftRight'); },
+    brake() { return held.has('Space'); },
+    /** Shooting is the mouse held down, or F. */
+    firing() { return mouse.down || held.has('KeyF'); },
+    /** Read and clear the one-frame action edges. */
     takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+      const out = pending;
+      pending = 0;
+      return out;
     },
   };
 }
